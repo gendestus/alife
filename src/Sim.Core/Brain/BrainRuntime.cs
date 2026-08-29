@@ -62,4 +62,17 @@ public sealed class BrainRuntime
 
     /// <summary>Test/debug hook: raw activation of a slot after the most recent Step().</summary>
     public float GetSlot(int slot) => _prev[slot];
+
+    /// <summary>Node count — the only thing about slot layout a checkpoint needs to validate against a re-decoded brain.</summary>
+    public int NodeCount => _prev.Length;
+
+    /// <summary>
+    /// The one piece of state that persists between ticks (recurrent link inputs read last
+    /// tick's activation). Re-decoding a genome alone loses this — checkpointing must capture
+    /// and restore it separately, or a resumed run diverges from an uninterrupted one the next
+    /// time a recurrent link is read (§12 test 2).
+    /// </summary>
+    public float[] GetActivationState() => (float[])_prev.Clone();
+
+    public void SetActivationState(float[] state) => System.Array.Copy(state, _prev, _prev.Length);
 }

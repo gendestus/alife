@@ -23,4 +23,9 @@ public interface IRandom
 
     /// <summary>Standard normal sample scaled/shifted to N(mean, std).</summary>
     float NextGaussian(float mean, float std);
+
+    /// <summary>Full internal state, for hashing (§12 test 1) and checkpointing.</summary>
+    (ulong S0, ulong S1, ulong S2, ulong S3) GetState();
+
+    void SetState(ulong s0, ulong s1, ulong s2, ulong s3);
 }

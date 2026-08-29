@@ -55,12 +55,23 @@ public sealed class Xoshiro256StarStar : IRandom
     }
 
     /// <summary>Explicit engine state — used by checkpoint save/restore.</summary>
-    public (ulong s0, ulong s1, ulong s2, ulong s3) GetState() => (_s0, _s1, _s2, _s3);
+    public (ulong S0, ulong S1, ulong S2, ulong S3) GetState() => (_s0, _s1, _s2, _s3);
 
     public void SetState(ulong s0, ulong s1, ulong s2, ulong s3)
     {
         _s0 = s0; _s1 = s1; _s2 = s2; _s3 = s3;
         _hasSpareGaussian = false;
+    }
+
+    /// <summary>NextGaussian's Marsaglia-polar spare value — not part of the core 4-word state,
+    /// but checkpointing must still capture it or a resumed run diverges from an uninterrupted
+    /// one the next time NextGaussian is called (§12 test 2).</summary>
+    public (bool HasSpare, float SpareValue) GetGaussianCache() => (_hasSpareGaussian, _spareGaussian);
+
+    public void SetGaussianCache(bool hasSpare, float spareValue)
+    {
+        _hasSpareGaussian = hasSpare;
+        _spareGaussian = spareValue;
     }
 
     public double NextDouble()

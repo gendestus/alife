@@ -44,6 +44,17 @@ public sealed partial class World
     /// <summary>True once creatures and eggs both hit zero with reseedOnExtinction off (§5) — the run is over.</summary>
     public bool Extinct { get; private set; }
 
+    // Fired as things happen; subscribers (persistence) translate these into DB rows. Handlers
+    // must be fast/non-blocking — the sim never waits on the DB (§8).
+    public event Action<GenomeCreatedInfo>? GenomeCreated;
+    public event Action<Creature>? CreatureCreated;
+    public event Action<Creature, DeathCause>? CreatureDied;
+    public event Action<EggLaidInfo>? EggLaid;
+    public event Action<EggHatchedInfo>? EggHatched;
+    public event Action<EggEatenInfo>? EggEaten;
+    public event Action<BiteInfo>? Bitten;
+    public event Action<int>? Reseeded;
+
     public long DeathsStarvation { get; private set; }
     public long DeathsPredation { get; private set; }
     public long DeathsOldAge { get; private set; }
@@ -61,9 +72,13 @@ public sealed partial class World
     private readonly List<int> _meatQueryScratch = new();
     private readonly List<int> _eggQueryScratch = new();
 
+    /// <summary>The seed this run started from — kept for provenance (e.g. in checkpoints); restoring RNG state uses GetState/SetState, not re-seeding.</summary>
+    public ulong Seed { get; }
+
     public World(SimConfig config, ulong seed)
     {
         _cfg = config;
+        Seed = seed;
         _rng = new Xoshiro256StarStar(seed);
         Plants = new PlantGrid(config.World);
         Meat = new MeatField(config.World.MeatDecay);
@@ -118,6 +133,9 @@ public sealed partial class World
     public Creature SpawnFromGenome(Genome genome, float x, float y, float heading,
         long genomeId = -1, ulong? parentId = null, int generation = 0, int speciesId = 0)
     {
+        bool mintedGenomeId = genomeId < 0;
+        long resolvedGenomeId = mintedGenomeId ? Innovations.NextGenomeId() : genomeId;
+
         var c = new Creature
         {
             Id = NextCreatureId++,
@@ -139,7 +157,7 @@ public sealed partial class World
             BirthTick = CurrentTick,
             Alive = true,
             Genome = genome,
-            GenomeId = genomeId >= 0 ? genomeId : Innovations.NextGenomeId(),
+            GenomeId = resolvedGenomeId,
             ParentId = parentId,
             Generation = generation,
             SpeciesId = speciesId,
@@ -157,6 +175,19 @@ public sealed partial class World
         c.ActuatorOutputs = new float[genome.Actuators.Count];
 
         Creatures.Add(c);
+
+        if (mintedGenomeId)
+        {
+            GenomeCreated?.Invoke(new GenomeCreatedInfo
+            {
+                GenomeId = resolvedGenomeId,
+                ParentGenomeId = null,
+                Genome = genome,
+                FirstSeenTick = CurrentTick,
+            });
+        }
+        CreatureCreated?.Invoke(c);
+
         return c;
     }
 
@@ -194,6 +225,60 @@ public sealed partial class World
              + (float)eggSum
              + Plants.TotalBiomass() * _cfg.Energy.EnergyPerBiomass
              + Meat.TotalEnergy();
+    }
+
+    /// <summary>
+    /// SHA-256 over positions/energies/RNG state/innovation counters, in a fixed deterministic
+    /// order (§12 test 1: two Worlds, same seed/config, N ticks -&gt; identical hash).
+    /// </summary>
+    public byte[] ComputeStateHash()
+    {
+        using var stream = new System.IO.MemoryStream();
+        using (var w = new System.IO.BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            w.Write(CurrentTick);
+            w.Write(NextCreatureId);
+            w.Write(NextEggId);
+
+            var (s0, s1, s2, s3) = _rng.GetState();
+            w.Write(s0); w.Write(s1); w.Write(s2); w.Write(s3);
+            if (_rng is Xoshiro256StarStar xo)
+            {
+                var (hasSpare, spare) = xo.GetGaussianCache();
+                w.Write(hasSpare);
+                w.Write(spare);
+            }
+
+            var inno = Innovations.GetState();
+            w.Write(inno.NextSensorGeneId);
+            w.Write(inno.NextActuatorGeneId);
+            w.Write(inno.NextGenomeId);
+            w.Write(inno.NextHiddenNodeId);
+            w.Write(inno.NextLinkInnovation);
+            w.Write(inno.LinkInnovations.Length);
+            foreach (var (from, to, innovation) in inno.LinkInnovations)
+            {
+                w.Write(from); w.Write(to); w.Write(innovation);
+            }
+
+            w.Write(Creatures.Count); // already ascending-id order
+            foreach (var c in Creatures)
+            {
+                w.Write(c.Id);
+                w.Write(c.X); w.Write(c.Y); w.Write(c.Heading);
+                w.Write(c.Energy); w.Write(c.Health);
+                w.Write(c.Age);
+                w.Write(c.GenomeId);
+            }
+
+            w.Write(Eggs.Count); // append-only order
+            foreach (var e in Eggs)
+            {
+                w.Write(e.Id); w.Write(e.X); w.Write(e.Y); w.Write(e.Energy); w.Write(e.HatchTick);
+            }
+        }
+        stream.Position = 0;
+        return System.Security.Cryptography.SHA256.HashData(stream);
     }
 
     public void Tick()
@@ -246,6 +331,7 @@ public sealed partial class World
             float heading = _rng.NextFloat(0f, MathF.PI * 2f);
             var c = SpawnFromGenome(egg.Genome, egg.X, egg.Y, heading, egg.GenomeId, egg.ParentId, egg.Generation, egg.SpeciesId);
             EggsHatched++;
+            EggHatched?.Invoke(new EggHatchedInfo { EggId = egg.Id, CreatureId = c.Id, X = egg.X, Y = egg.Y, Tick = CurrentTick });
             if (VerboseLogging)
             {
                 Console.Error.WriteLine($"tick={CurrentTick} hatch id={c.Id} parent={egg.ParentId} generation={egg.Generation}");
@@ -265,6 +351,7 @@ public sealed partial class World
         {
             if (VerboseLogging) Console.Error.WriteLine($"tick={CurrentTick} RESEED count={_cfg.Life.BootstrapCount}");
             BootstrapSpawnFromGenome(_cfg.Life.BootstrapCount);
+            Reseeded?.Invoke(_cfg.Life.BootstrapCount);
         }
         else
         {
@@ -344,6 +431,7 @@ public sealed partial class World
             case DeathCause.OLD_AGE: DeathsOldAge++; break;
         }
         Meat.Spawn(c.X, c.Y, _cfg.World.CorpseEnergy * c.Size);
+        CreatureDied?.Invoke(c, cause);
         if (VerboseLogging)
         {
             string killer = cause == DeathCause.PREDATION ? $" killer={c.LastDamagedBy}" : "";

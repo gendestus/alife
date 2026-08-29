@@ -140,8 +140,11 @@ public sealed partial class World
                 // Tombstoned (Energy = 0), not removed: FoodIndex bucket indices for this tick
                 // must stay valid for creatures acting later in the same tick's loop. Actual
                 // removal happens in HatchEggs' end-of-tick compaction pass.
-                Eggs[eggIdx].Energy = 0f;
+                var eggEaten = Eggs[eggIdx];
+                ulong eggEatenId = eggEaten.Id;
+                eggEaten.Energy = 0f;
                 EggsEaten++;
+                EggEaten?.Invoke(new EggEatenInfo { EaterId = c.Id, EggId = eggEatenId, X = c.X, Y = c.Y, ValueGained = actualGain, Tick = CurrentTick });
             }
             else
             {
@@ -175,7 +178,18 @@ public sealed partial class World
         }
 
         var childGenome = GenomeMutator.Mutate(c.Genome!, _rng, Innovations, _cfg.Mutation, _cfg.Mutation.MutationScale, _cfg.Mutation.StructuralScale);
-        long genomeId = GenomesEqual(childGenome, c.Genome!) ? c.GenomeId : Innovations.NextGenomeId();
+        bool sameGenome = GenomesEqual(childGenome, c.Genome!);
+        long genomeId = sameGenome ? c.GenomeId : Innovations.NextGenomeId();
+        if (!sameGenome)
+        {
+            GenomeCreated?.Invoke(new GenomeCreatedInfo
+            {
+                GenomeId = genomeId,
+                ParentGenomeId = c.GenomeId,
+                Genome = childGenome,
+                FirstSeenTick = CurrentTick,
+            });
+        }
 
         // Clamp at lay time (§4.1): eggInvestment must stay below eggThreshold.
         float eggInvestment = MathF.Min(c.EggInvestment, c.EggThreshold - 5f);
@@ -184,9 +198,10 @@ public sealed partial class World
         c.OffspringCount++;
         _lastTickCostsAccum += _cfg.Energy.CEggOverhead; // eggInvestment transfers to the egg, not a loss
 
+        ulong eggId = NextEggId++;
         Eggs.Add(new Entities.Egg
         {
-            Id = NextEggId++,
+            Id = eggId,
             Genome = childGenome,
             GenomeId = genomeId,
             X = c.X,
@@ -199,6 +214,7 @@ public sealed partial class World
             Generation = c.Generation + 1,
         });
         EggsLaid++;
+        EggLaid?.Invoke(new EggLaidInfo { ParentId = c.Id, EggId = eggId, GenomeId = genomeId, X = c.X, Y = c.Y, EggEnergy = eggInvestment, Tick = CurrentTick });
     }
 
     private static bool GenomesEqual(Genome a, Genome b) => a.Hash().AsSpan().SequenceEqual(b.Hash());
@@ -239,6 +255,7 @@ public sealed partial class World
         target.Health -= dmg;
         target.LastDamagedBy = c.Id;
         target.LastDamagedTick = CurrentTick;
+        Bitten?.Invoke(new BiteInfo { BiterId = c.Id, TargetId = target.Id, X = c.X, Y = c.Y, Damage = dmg, Tick = CurrentTick });
     }
 
     private void ExecuteEmit(Creature c, ActuatorGene gene, float o)

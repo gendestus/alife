@@ -11,6 +11,7 @@ public sealed class ScentGrid
     private const int Channels = 4;
     private const float MaxValue = 100f;
 
+    public const int ChannelCount = Channels;
     public int S { get; }
     public float CellSize { get; }
 
@@ -47,6 +48,12 @@ public sealed class ScentGrid
     }
 
     public float Sample(int channel, float x, float y) => _values[channel][CellIndex(x, y)];
+
+    /// <summary>Live reference to a channel's cell array — for checkpoint save only; don't mutate.</summary>
+    public float[] GetChannelValues(int channel) => _values[channel];
+
+    /// <summary>For checkpoint load: overwrite a channel's cells from a saved array of the same length.</summary>
+    public void SetChannelValues(int channel, float[] values) => System.Array.Copy(values, _values[channel], _values[channel].Length);
 
     public void Deposit(int channel, float x, float y, float amount)
     {
