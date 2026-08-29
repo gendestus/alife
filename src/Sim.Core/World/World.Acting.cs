@@ -55,7 +55,7 @@ public sealed partial class World
             case ActuatorKind.Eat: ExecuteEat(c, o); break;
             case ActuatorKind.Bite: ExecuteBite(c, gene, o); break;
             case ActuatorKind.Emit: ExecuteEmit(c, gene, o); break;
-            case ActuatorKind.LayEgg: /* preconditions checked in M3 alongside the Egg entity */ break;
+            case ActuatorKind.LayEgg: ExecuteLayEgg(c, o); break;
         }
     }
 
@@ -88,37 +88,66 @@ public sealed partial class World
         float plantDesiredAmount = MathF.Min(_cfg.Energy.EatRate, b);
         float plantDesiredGain = plantDesiredAmount * _cfg.Energy.EnergyPerBiomass * plantEff;
 
-        int meatIdx = -1;
-        float meatBestDist = float.MaxValue;
         float reach = c.Size + 1f;
-        for (int i = 0; i < Meat.Count; i++)
+        float meatEff = MathF.Pow(c.Diet, _cfg.Energy.DietExp);
+
+        Food.QueryRadius(c.X, c.Y, reach, _meatQueryScratch, _eggQueryScratch);
+
+        int meatIdx = -1;
+        float meatDist = float.MaxValue;
+        for (int k = 0; k < _meatQueryScratch.Count; k++)
         {
+            int i = _meatQueryScratch[k];
             var m = Meat.Items[i];
             float dx = m.X - c.X, dy = m.Y - c.Y;
             float dist = MathF.Sqrt(dx * dx + dy * dy);
-            if (dist <= reach && dist < meatBestDist)
+            if (dist <= reach && dist < meatDist)
             {
-                meatBestDist = dist;
+                meatDist = dist;
                 meatIdx = i;
             }
         }
 
-        float meatEff = MathF.Pow(c.Diet, _cfg.Energy.DietExp);
-        float meatDesiredGain = 0f;
-        float meatDesiredAmount = 0f;
-        if (meatIdx >= 0)
+        // Eggs count as meat for foraging purposes too (§4.2/§4.3), nearest source wins.
+        int eggIdx = -1;
+        float eggDist = float.MaxValue;
+        for (int k = 0; k < _eggQueryScratch.Count; k++)
         {
-            meatDesiredAmount = MathF.Min(_cfg.Energy.EatRate, Meat.Items[meatIdx].Energy);
-            meatDesiredGain = meatDesiredAmount * meatEff;
+            int i = _eggQueryScratch[k];
+            var egg = Eggs[i];
+            float dx = egg.X - c.X, dy = egg.Y - c.Y;
+            float dist = MathF.Sqrt(dx * dx + dy * dy);
+            if (dist <= reach && dist < eggDist)
+            {
+                eggDist = dist;
+                eggIdx = i;
+            }
         }
+
+        bool eggIsNearer = eggIdx >= 0 && (meatIdx < 0 || eggDist < meatDist);
+        float animalDesiredGain;
+        if (eggIsNearer) animalDesiredGain = Eggs[eggIdx].Energy * meatEff; // full amount: eating an egg destroys it
+        else if (meatIdx >= 0) animalDesiredGain = MathF.Min(_cfg.Energy.EatRate, Meat.Items[meatIdx].Energy) * meatEff;
+        else animalDesiredGain = 0f;
 
         float headroom = MathF.Max(0f, c.MaxEnergy - c.Energy);
         float gained;
-        if (meatDesiredGain > plantDesiredGain && meatIdx >= 0)
+        if (animalDesiredGain > plantDesiredGain && (eggIsNearer || meatIdx >= 0))
         {
-            float actualGain = MathF.Min(meatDesiredGain, headroom);
-            float actualAmount = meatDesiredGain > 0f ? actualGain / meatEff : 0f;
-            Meat.Reduce(meatIdx, actualAmount);
+            float actualGain = MathF.Min(animalDesiredGain, headroom);
+            if (eggIsNearer)
+            {
+                // Tombstoned (Energy = 0), not removed: FoodIndex bucket indices for this tick
+                // must stay valid for creatures acting later in the same tick's loop. Actual
+                // removal happens in HatchEggs' end-of-tick compaction pass.
+                Eggs[eggIdx].Energy = 0f;
+                EggsEaten++;
+            }
+            else
+            {
+                float actualAmount = animalDesiredGain > 0f ? actualGain / meatEff : 0f;
+                Meat.Reduce(meatIdx, actualAmount);
+            }
             gained = actualGain;
         }
         else
@@ -133,6 +162,46 @@ public sealed partial class World
         c.Energy -= EatActiveCost;
         _lastTickCostsAccum += EatActiveCost;
     }
+
+    private void ExecuteLayEgg(Creature c, float o)
+    {
+        if (o <= 0.5f) return;
+        if (c.Age < _cfg.Life.MaturityTicks) return;
+        if (c.Energy < c.EggThreshold) return;
+        if (Creatures.Count + Eggs.Count >= _cfg.Life.PopCap)
+        {
+            CapHits++;
+            return;
+        }
+
+        var childGenome = GenomeMutator.Mutate(c.Genome!, _rng, Innovations, _cfg.Mutation, _cfg.Mutation.MutationScale, _cfg.Mutation.StructuralScale);
+        long genomeId = GenomesEqual(childGenome, c.Genome!) ? c.GenomeId : Innovations.NextGenomeId();
+
+        // Clamp at lay time (§4.1): eggInvestment must stay below eggThreshold.
+        float eggInvestment = MathF.Min(c.EggInvestment, c.EggThreshold - 5f);
+        float cost = eggInvestment + _cfg.Energy.CEggOverhead;
+        c.Energy -= cost;
+        c.OffspringCount++;
+        _lastTickCostsAccum += _cfg.Energy.CEggOverhead; // eggInvestment transfers to the egg, not a loss
+
+        Eggs.Add(new Entities.Egg
+        {
+            Id = NextEggId++,
+            Genome = childGenome,
+            GenomeId = genomeId,
+            X = c.X,
+            Y = c.Y,
+            Energy = eggInvestment,
+            LaidTick = CurrentTick,
+            HatchTick = CurrentTick + _cfg.Life.IncubationTicks,
+            ParentId = c.Id,
+            SpeciesId = c.SpeciesId,
+            Generation = c.Generation + 1,
+        });
+        EggsLaid++;
+    }
+
+    private static bool GenomesEqual(Genome a, Genome b) => a.Hash().AsSpan().SequenceEqual(b.Hash());
 
     private void ExecuteBite(Creature c, ActuatorGene gene, float o)
     {

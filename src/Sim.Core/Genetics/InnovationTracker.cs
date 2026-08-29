@@ -12,6 +12,7 @@ public sealed class InnovationTracker
 {
     private long _nextSensorGeneId;
     private long _nextActuatorGeneId;
+    private long _nextGenomeId;
     private int _nextHiddenNodeId = 1;
     private int _nextLinkInnovation;
     private readonly Dictionary<(int from, int to), int> _linkInnovations = new();
@@ -19,6 +20,8 @@ public sealed class InnovationTracker
     public long NextSensorGeneId() => _nextSensorGeneId++;
 
     public long NextActuatorGeneId() => _nextActuatorGeneId++;
+
+    public long NextGenomeId() => _nextGenomeId++;
 
     public int NextHiddenNodeId() => _nextHiddenNodeId++;
 

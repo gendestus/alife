@@ -19,4 +19,8 @@
     <ProjectReference Include="..\..\src\Sim.Core\Sim.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\config\default.json" Link="config\default.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

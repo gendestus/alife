@@ -124,9 +124,12 @@ public sealed partial class World
         float sensorDir = self.Heading + gene.Angle;
         float halfFov = gene.Fov * 0.5f;
         float sum = 0f;
-        for (int i = 0; i < Meat.Count; i++)
+
+        Food.QueryRadius(self.X, self.Y, gene.Range, _meatQueryScratch, _eggQueryScratch);
+
+        for (int k = 0; k < _meatQueryScratch.Count; k++)
         {
-            var m = Meat.Items[i];
+            var m = Meat.Items[_meatQueryScratch[k]];
             float dx = m.X - self.X, dy = m.Y - self.Y;
             float dist = MathF.Sqrt(dx * dx + dy * dy);
             if (dist > gene.Range) continue;
@@ -134,6 +137,18 @@ public sealed partial class World
             float delta = NormalizeAngle(bearing - sensorDir);
             if (MathF.Abs(delta) > halfFov) continue;
             sum += m.Energy;
+        }
+        // Eggs count as meat too (§4.2: "Includes eggs (as meat, energy = egg energy)").
+        for (int k = 0; k < _eggQueryScratch.Count; k++)
+        {
+            var egg = Eggs[_eggQueryScratch[k]];
+            float dx = egg.X - self.X, dy = egg.Y - self.Y;
+            float dist = MathF.Sqrt(dx * dx + dy * dy);
+            if (dist > gene.Range) continue;
+            float bearing = MathF.Atan2(dy, dx);
+            float delta = NormalizeAngle(bearing - sensorDir);
+            if (MathF.Abs(delta) > halfFov) continue;
+            sum += egg.Energy;
         }
         return MathF.Min(1f, sum / 50f);
     }

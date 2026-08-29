@@ -17,6 +17,13 @@ public sealed class Creature
     public long BirthTick;
     public bool Alive;
 
+    // Lineage (§3). SpeciesId is a placeholder (0) until speciation lands in M5.
+    public long GenomeId;
+    public int SpeciesId;
+    public ulong? ParentId;
+    public int Generation;
+    public int OffspringCount;
+
     // Scalar traits (§4.1), copied from the genome at hatch (or hardcoded for the M1 baseline).
     public float Size;
     public float Speed;

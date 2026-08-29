@@ -3,7 +3,7 @@
     "width": 512,
     "toroidal": false,
     "plantGrid": 128,
-    "bMax": 10,
+    "bMax": 16,
     "plantRate": 0.01,
     "plantSeed": 0.002,
     "capacityMin": 0.2,
@@ -17,15 +17,15 @@
     "meatDecay": 0.995
   },
   "energy": {
-    "cBasal": 0.03,
+    "cBasal": 0.15,
     "cArmor": 0.03,
-    "cStore": 0.01,
+    "cStore": 0.10,
     "cLife": 0.01,
     "cVis": 0.01,
     "cMove": 0.05,
     "cTurn": 0.005,
     "cEmit": 0.01,
-    "cEggOverhead": 5,
+    "cEggOverhead": 10,
     "cNode": 0.002,
     "cLink": 0.0005,
     "actuatorPassive": 0.002,
@@ -36,7 +36,7 @@
     "healthRegen": 0.05
   },
   "life": {
-    "maturityTicks": 150,
+    "maturityTicks": 500,
     "incubationTicks": 50,
     "popCap": 6000,
     "reseedOnExtinction": false,

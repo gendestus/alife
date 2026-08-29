@@ -25,18 +25,32 @@ public sealed partial class World
     public MeatField Meat { get; }
     public ScentGrid Scent { get; }
     public SpatialHash Hash { get; }
+    public FoodIndex Food { get; }
     public InnovationTracker Innovations { get; } = new();
     public List<Creature> Creatures { get; } = new();
+    public List<Egg> Eggs { get; } = new();
 
     public long CurrentTick { get; private set; }
     public ulong NextCreatureId { get; private set; }
+    public ulong NextEggId { get; private set; }
 
     /// <summary>Test-only: skip death checks/removal so the energy pool stays closed.</summary>
     public bool SuppressDeath { get; set; }
 
+    /// <summary>Per-death stderr logging (§10, M1's "deaths logged to stderr with causes"). On by
+    /// default to match the CLI's established behavior; long-running tests turn it off.</summary>
+    public bool VerboseLogging { get; set; } = true;
+
+    /// <summary>True once creatures and eggs both hit zero with reseedOnExtinction off (§5) — the run is over.</summary>
+    public bool Extinct { get; private set; }
+
     public long DeathsStarvation { get; private set; }
     public long DeathsPredation { get; private set; }
     public long DeathsOldAge { get; private set; }
+    public long EggsLaid { get; private set; }
+    public long EggsHatched { get; private set; }
+    public long EggsEaten { get; private set; }
+    public long CapHits { get; private set; }
 
     public float LastTickPlantRegrowth { get; private set; }
     public float LastTickCosts => (float)_lastTickCostsAccum;
@@ -44,6 +58,8 @@ public sealed partial class World
 
     // Reused per-tick scratch buffers (avoids per-creature allocation in sensing/acting).
     private readonly List<int> _queryScratch = new();
+    private readonly List<int> _meatQueryScratch = new();
+    private readonly List<int> _eggQueryScratch = new();
 
     public World(SimConfig config, ulong seed)
     {
@@ -53,6 +69,7 @@ public sealed partial class World
         Meat = new MeatField(config.World.MeatDecay);
         Scent = new ScentGrid(config.World);
         Hash = new SpatialHash(config.World.Width, config.World.HashCell);
+        Food = new FoodIndex(config.World.Width, config.World.HashCell);
     }
 
     public int Population => Creatures.Count;
@@ -97,8 +114,9 @@ public sealed partial class World
         }
     }
 
-    /// <summary>M2: a real, genome+brain-driven creature.</summary>
-    public Creature SpawnFromGenome(Genome genome, float x, float y, float heading)
+    /// <summary>M2: a real, genome+brain-driven creature. genomeId/parentId/generation/speciesId default to a fresh bootstrap-style lineage.</summary>
+    public Creature SpawnFromGenome(Genome genome, float x, float y, float heading,
+        long genomeId = -1, ulong? parentId = null, int generation = 0, int speciesId = 0)
     {
         var c = new Creature
         {
@@ -121,6 +139,10 @@ public sealed partial class World
             BirthTick = CurrentTick,
             Alive = true,
             Genome = genome,
+            GenomeId = genomeId >= 0 ? genomeId : Innovations.NextGenomeId(),
+            ParentId = parentId,
+            Generation = generation,
+            SpeciesId = speciesId,
         };
         c.MaxEnergy = 100f * c.Size * c.StorageCap;
         c.MaxHealth = 50f * c.Size;
@@ -162,10 +184,14 @@ public sealed partial class World
         return (float)sum;
     }
 
-    /// <summary>Σ creature energy + Σ plant biomass·energyPerBiomass + Σ meat energy — the closed pool (§12 test 5).</summary>
+    /// <summary>Σ creature energy + Σ egg energy + Σ plant biomass·energyPerBiomass + Σ meat energy — the closed pool (§12 test 5).</summary>
     public float PoolEnergy()
     {
+        double eggSum = 0.0;
+        for (int i = 0; i < Eggs.Count; i++) eggSum += Eggs[i].Energy;
+
         return TotalCreatureEnergy()
+             + (float)eggSum
              + Plants.TotalBiomass() * _cfg.Energy.EnergyPerBiomass
              + Meat.TotalEnergy();
     }
@@ -177,6 +203,7 @@ public sealed partial class World
         LastTickPlantRegrowth = Plants.Regrow();
         if (_cfg.World.ScentStep > 0 && CurrentTick % _cfg.World.ScentStep == 0) Scent.Step();
         Hash.Rebuild(Creatures);
+        Food.Rebuild(Meat, Eggs);
 
         // Step 3: sense -> brain -> act. Actions apply immediately.
         for (int i = 0; i < Creatures.Count; i++)
@@ -193,7 +220,56 @@ public sealed partial class World
         CompactDead();
         Meat.Decay();
 
+        // Step 5: hatch eggs whose incubation is done, in egg-id order (§2).
+        HatchEggs();
+
+        CheckExtinction();
+
         CurrentTick++;
+    }
+
+    /// <summary>Hatch eggs where tick &gt;= hatchTick, in egg-id order (list order, since Eggs is append-only until hatch/predation removal).</summary>
+    private void HatchEggs()
+    {
+        int write = 0;
+        for (int read = 0; read < Eggs.Count; read++)
+        {
+            var egg = Eggs[read];
+            if (egg.Energy <= 0f) continue; // tombstoned by predation this tick (World.Acting's ExecuteEat) — drop it
+
+            if (CurrentTick < egg.HatchTick)
+            {
+                Eggs[write++] = egg;
+                continue;
+            }
+
+            float heading = _rng.NextFloat(0f, MathF.PI * 2f);
+            var c = SpawnFromGenome(egg.Genome, egg.X, egg.Y, heading, egg.GenomeId, egg.ParentId, egg.Generation, egg.SpeciesId);
+            EggsHatched++;
+            if (VerboseLogging)
+            {
+                Console.Error.WriteLine($"tick={CurrentTick} hatch id={c.Id} parent={egg.ParentId} generation={egg.Generation}");
+            }
+        }
+        if (write < Eggs.Count)
+        {
+            Eggs.RemoveRange(write, Eggs.Count - write);
+        }
+    }
+
+    private void CheckExtinction()
+    {
+        if (Creatures.Count > 0 || Eggs.Count > 0) return;
+
+        if (_cfg.Life.ReseedOnExtinction)
+        {
+            if (VerboseLogging) Console.Error.WriteLine($"tick={CurrentTick} RESEED count={_cfg.Life.BootstrapCount}");
+            BootstrapSpawnFromGenome(_cfg.Life.BootstrapCount);
+        }
+        else
+        {
+            Extinct = true;
+        }
     }
 
     private void LegacyRandomWalkAct(Creature c)
@@ -268,8 +344,11 @@ public sealed partial class World
             case DeathCause.OLD_AGE: DeathsOldAge++; break;
         }
         Meat.Spawn(c.X, c.Y, _cfg.World.CorpseEnergy * c.Size);
-        string killer = cause == DeathCause.PREDATION ? $" killer={c.LastDamagedBy}" : "";
-        Console.Error.WriteLine($"tick={CurrentTick} death id={c.Id} cause={cause} age={c.Age} energy={c.Energy:F2}{killer}");
+        if (VerboseLogging)
+        {
+            string killer = cause == DeathCause.PREDATION ? $" killer={c.LastDamagedBy}" : "";
+            Console.Error.WriteLine($"tick={CurrentTick} death id={c.Id} cause={cause} age={c.Age} energy={c.Energy:F2}{killer}");
+        }
     }
 
     private void CompactDead()
