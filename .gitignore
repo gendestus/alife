@@ -1,0 +1,17 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+
+## Rider / VS
+.vs/
+.idea/
+
+## Run artifacts
+runs/
+*.log
+
+## OS
+.DS_Store
+Thumbs.db

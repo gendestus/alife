@@ -1,0 +1,69 @@
+{
+  "world": {
+    "width": 512,
+    "toroidal": false,
+    "plantGrid": 128,
+    "bMax": 10,
+    "plantRate": 0.01,
+    "plantSeed": 0.002,
+    "capacityMin": 0.2,
+    "noiseSeedOffset": 0,
+    "scentGrid": 64,
+    "scentStep": 4,
+    "scentDecay": 0.97,
+    "scentDiffuse": 0.2,
+    "hashCell": 8,
+    "corpseEnergy": 30,
+    "meatDecay": 0.995
+  },
+  "energy": {
+    "cBasal": 0.03,
+    "cArmor": 0.03,
+    "cStore": 0.01,
+    "cLife": 0.01,
+    "cVis": 0.01,
+    "cMove": 0.05,
+    "cTurn": 0.005,
+    "cEmit": 0.01,
+    "cEggOverhead": 5,
+    "cNode": 0.002,
+    "cLink": 0.0005,
+    "actuatorPassive": 0.002,
+    "eatRate": 2,
+    "energyPerBiomass": 1,
+    "dietExp": 1.5,
+    "maxTurn": 0.3,
+    "healthRegen": 0.05
+  },
+  "life": {
+    "maturityTicks": 150,
+    "incubationTicks": 50,
+    "popCap": 6000,
+    "reseedOnExtinction": false,
+    "bootstrapCount": 600
+  },
+  "mutation": {
+    "mutationScale": 1.0,
+    "structuralScale": 1.0,
+    "maxSensors": 12,
+    "maxActuators": 10,
+    "maxHidden": 64,
+    "maxLinks": 512
+  },
+  "species": {
+    "c1": 1.0,
+    "c2": 0.4,
+    "c3": 2.0,
+    "c4": 1.0,
+    "delta": 3.0,
+    "speciateEvery": 100,
+    "retainTicks": 2000,
+    "sampleSize": 200
+  },
+  "logging": {
+    "statsEvery": 100,
+    "positionsEvery": 100,
+    "positionModulo": 1,
+    "logBites": true
+  }
+}
