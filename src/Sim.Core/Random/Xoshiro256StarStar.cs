@@ -76,8 +76,11 @@ public sealed class Xoshiro256StarStar : IRandom
     public int NextInt(int minInclusive, int maxExclusive)
     {
         uint range = (uint)(maxExclusive - minInclusive);
-        // Lemire's method: unbiased bounded range from a 64-bit draw.
-        ulong m = (ulong)NextUInt64() * range;
+        // Lemire's method: a 32x32->64 multiply, so this needs a 32-bit draw, not the full
+        // 64-bit output — multiplying by the full 64 bits silently overflows ulong and can
+        // return a value >= range.
+        uint r32 = (uint)NextUInt64();
+        ulong m = (ulong)r32 * range;
         return minInclusive + (int)(m >> 32);
     }
 

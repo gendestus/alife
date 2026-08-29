@@ -56,14 +56,21 @@ public sealed class SpatialHash
     /// <summary>Indices of creatures in the 3x3 block of cells centered on (x, y) — the usual query for range-limited sensors.</summary>
     public void QueryNeighborhood(float x, float y, List<int> result)
     {
+        QueryRadius(x, y, _cellSize, result);
+    }
+
+    /// <summary>Indices of creatures in cells overlapping a circle of the given radius (world units) around (x, y).</summary>
+    public void QueryRadius(float x, float y, float radius, List<int> result)
+    {
         result.Clear();
         int cx = (int)(x / _cellSize);
         int cy = (int)(y / _cellSize);
-        for (int dy = -1; dy <= 1; dy++)
+        int cellRadius = System.Math.Max(1, (int)System.MathF.Ceiling(radius / _cellSize));
+        for (int dy = -cellRadius; dy <= cellRadius; dy++)
         {
             int gy = cy + dy;
             if (gy < 0 || gy >= _gridDim) continue;
-            for (int dx = -1; dx <= 1; dx++)
+            for (int dx = -cellRadius; dx <= cellRadius; dx++)
             {
                 int gx = cx + dx;
                 if (gx < 0 || gx >= _gridDim) continue;

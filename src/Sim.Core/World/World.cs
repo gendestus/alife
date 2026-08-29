@@ -1,27 +1,31 @@
 using System;
 using System.Collections.Generic;
+using Sim.Core.Brain;
 using Sim.Core.Config;
 using Sim.Core.Entities;
+using Sim.Core.Genetics;
 using Sim.Core.Random;
 
 namespace Sim.Core;
 
 /// <summary>
-/// M1 world: plants, meat, spatial hash, a fixed-trait creature population driven by a
-/// random-walk controller, energy upkeep, and death. Brain/sensors/reproduction/speciation
-/// arrive in later milestones (§13).
+/// World: plants, meat, scent, spatial hash, creature population, energy upkeep, and death.
+/// Reproduction/speciation arrive in later milestones (§13). Split across World.cs (core loop),
+/// World.Sensing.cs (sensor evaluation) and World.Acting.cs (actuator execution).
 /// </summary>
-public sealed class World
+public sealed partial class World
 {
     private const float EatActiveCost = 0.01f; // §4.3 Eat: fixed, not config-driven.
-    private const int FixedActuatorCount = 3;  // Thrust, Turn, Eat — hardcoded for M1.
+    private const int LegacyActuatorCount = 3;  // Thrust, Turn, Eat — the M1 random-walk baseline's fixed set.
 
     private readonly SimConfig _cfg;
     private readonly IRandom _rng;
 
     public PlantGrid Plants { get; }
     public MeatField Meat { get; }
+    public ScentGrid Scent { get; }
     public SpatialHash Hash { get; }
+    public InnovationTracker Innovations { get; } = new();
     public List<Creature> Creatures { get; } = new();
 
     public long CurrentTick { get; private set; }
@@ -38,17 +42,22 @@ public sealed class World
     public float LastTickCosts => (float)_lastTickCostsAccum;
     private double _lastTickCostsAccum; // double: summed over up to popCap creatures, kept precise for §12 test 5
 
+    // Reused per-tick scratch buffers (avoids per-creature allocation in sensing/acting).
+    private readonly List<int> _queryScratch = new();
+
     public World(SimConfig config, ulong seed)
     {
         _cfg = config;
         _rng = new Xoshiro256StarStar(seed);
         Plants = new PlantGrid(config.World);
         Meat = new MeatField(config.World.MeatDecay);
+        Scent = new ScentGrid(config.World);
         Hash = new SpatialHash(config.World.Width, config.World.HashCell);
     }
 
     public int Population => Creatures.Count;
 
+    /// <summary>M1 baseline: fixed traits, no genome/brain, random-walk controller.</summary>
     public void BootstrapSpawn(int count)
     {
         float w = _cfg.World.Width;
@@ -78,8 +87,68 @@ public sealed class World
             c.MaxHealth = 50f * c.Size;
             c.Energy = c.MaxEnergy;
             c.Health = c.MaxHealth;
+            c.PassiveCostPerTick = _cfg.Energy.CBasal * MathF.Pow(c.Size, 1.5f)
+                                  + _cfg.Energy.CArmor * c.Armor * c.Size
+                                  + _cfg.Energy.CStore * c.StorageCap * c.Size
+                                  + _cfg.Energy.CLife * c.Lifespan / 1000f
+                                  + _cfg.Energy.ActuatorPassive * LegacyActuatorCount;
 
             Creatures.Add(c);
+        }
+    }
+
+    /// <summary>M2: a real, genome+brain-driven creature.</summary>
+    public Creature SpawnFromGenome(Genome genome, float x, float y, float heading)
+    {
+        var c = new Creature
+        {
+            Id = NextCreatureId++,
+            X = x,
+            Y = y,
+            Heading = heading,
+            Size = genome.Body.Size,
+            Speed = genome.Body.Speed,
+            Armor = genome.Body.Armor,
+            Diet = genome.Metabolism.Diet,
+            StorageCap = genome.Metabolism.StorageCap,
+            Lifespan = genome.Metabolism.Lifespan,
+            EggThreshold = genome.Repro.EggThreshold,
+            EggInvestment = genome.Repro.EggInvestment,
+            ColorR = genome.Body.ColorR,
+            ColorG = genome.Body.ColorG,
+            ColorB = genome.Body.ColorB,
+            Age = 0,
+            BirthTick = CurrentTick,
+            Alive = true,
+            Genome = genome,
+        };
+        c.MaxEnergy = 100f * c.Size * c.StorageCap;
+        c.MaxHealth = 50f * c.Size;
+        c.Energy = c.MaxEnergy;
+        c.Health = c.MaxHealth;
+        c.PassiveCostPerTick = GeneSpec.TotalPassiveCost(genome, _cfg.Energy);
+
+        c.Brain = BrainDecoder.Decode(genome);
+        int inputCount = 0;
+        foreach (var s in genome.Sensors) inputCount += GeneSpec.SensorSlotCount(s.Kind);
+        c.SensorInputs = new float[inputCount];
+        c.ActuatorOutputs = new float[genome.Actuators.Count];
+
+        Creatures.Add(c);
+        return c;
+    }
+
+    /// <summary>M2+: a bootstrap population of real genome-driven creatures (§4.5).</summary>
+    public void BootstrapSpawnFromGenome(int count)
+    {
+        float w = _cfg.World.Width;
+        for (int i = 0; i < count; i++)
+        {
+            var genome = GenomeFactory.CreateBootstrap(_rng, Innovations);
+            float x = _rng.NextFloat(0f, w);
+            float y = _rng.NextFloat(0f, w);
+            float heading = _rng.NextFloat(0f, MathF.PI * 2f);
+            SpawnFromGenome(genome, x, y, heading);
         }
     }
 
@@ -106,14 +175,15 @@ public sealed class World
         _lastTickCostsAccum = 0.0;
 
         LastTickPlantRegrowth = Plants.Regrow();
+        if (_cfg.World.ScentStep > 0 && CurrentTick % _cfg.World.ScentStep == 0) Scent.Step();
         Hash.Rebuild(Creatures);
 
-        // Step 3: sense -> brain -> act (M1: random-walk act only). Actions apply immediately.
+        // Step 3: sense -> brain -> act. Actions apply immediately.
         for (int i = 0; i < Creatures.Count; i++)
         {
             var c = Creatures[i];
             if (!c.Alive) continue;
-            Act(c);
+            if (c.Genome is null) LegacyRandomWalkAct(c); else GenomeAct(c);
         }
 
         // Step 4: upkeep, age, health regen, death checks — a separate full pass so every
@@ -126,7 +196,7 @@ public sealed class World
         CurrentTick++;
     }
 
-    private void Act(Creature c)
+    private void LegacyRandomWalkAct(Creature c)
     {
         float turnO = _rng.NextFloat(-1f, 1f);
         float thrustO = _rng.NextFloat(-1f, 1f);
@@ -165,13 +235,8 @@ public sealed class World
             var c = Creatures[i];
             if (!c.Alive) continue;
 
-            float passive = _cfg.Energy.CBasal * MathF.Pow(c.Size, 1.5f)
-                          + _cfg.Energy.CArmor * c.Armor * c.Size
-                          + _cfg.Energy.CStore * c.StorageCap * c.Size
-                          + _cfg.Energy.CLife * c.Lifespan / 1000f
-                          + _cfg.Energy.ActuatorPassive * FixedActuatorCount;
-            c.Energy -= passive;
-            _lastTickCostsAccum += passive;
+            c.Energy -= c.PassiveCostPerTick;
+            _lastTickCostsAccum += c.PassiveCostPerTick;
 
             if (c.Energy > 0.2f * c.MaxEnergy)
             {
@@ -203,7 +268,8 @@ public sealed class World
             case DeathCause.OLD_AGE: DeathsOldAge++; break;
         }
         Meat.Spawn(c.X, c.Y, _cfg.World.CorpseEnergy * c.Size);
-        Console.Error.WriteLine($"tick={CurrentTick} death id={c.Id} cause={cause} age={c.Age} energy={c.Energy:F2}");
+        string killer = cause == DeathCause.PREDATION ? $" killer={c.LastDamagedBy}" : "";
+        Console.Error.WriteLine($"tick={CurrentTick} death id={c.Id} cause={cause} age={c.Age} energy={c.Energy:F2}{killer}");
     }
 
     private void CompactDead()

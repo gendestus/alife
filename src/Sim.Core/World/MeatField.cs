@@ -21,6 +21,14 @@ public sealed class MeatField
         _items.Add(new Meat(x, y, energy));
     }
 
+    /// <summary>Remove `amount` energy from item `index` (e.g. Eat consuming from a corpse).</summary>
+    public void Reduce(int index, float amount)
+    {
+        var m = _items[index];
+        m.Energy -= amount;
+        _items[index] = m;
+    }
+
     /// <summary>Decay every item by one tick; compact out anything below the removal threshold.</summary>
     public void Decay()
     {
