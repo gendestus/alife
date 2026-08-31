@@ -255,6 +255,7 @@ public sealed partial class World
         target.Health -= dmg;
         target.LastDamagedBy = c.Id;
         target.LastDamagedTick = CurrentTick;
+        Bites++;
         Bitten?.Invoke(new BiteInfo { BiterId = c.Id, TargetId = target.Id, X = c.X, Y = c.Y, Damage = dmg, Tick = CurrentTick });
     }
 

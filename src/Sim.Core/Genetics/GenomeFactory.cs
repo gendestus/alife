@@ -9,11 +9,47 @@ namespace Sim.Core.Genetics;
 public static class GenomeFactory
 {
     /// <summary>
-    /// One bootstrap individual: fixed structure (sensors/actuators/topology) with fresh random
-    /// color and weights, then every §4.1 scalar gene perturbed by N(0, 2%·range) for population
-    /// diversity from tick 0.
+    /// One independent bootstrap genome: fresh gene ids and link innovations from `tracker`, so
+    /// it reads as a brand-new founding lineage. Fine for a single genome (e.g. a test's starting
+    /// point for chained mutation) — but a whole bootstrap POPULATION built by calling this once
+    /// per individual mints distinct gene ids per call, so §7 GenomeDistance sees every pair as
+    /// maximally novel (zero matching links) even though they're topologically identical. Use
+    /// <see cref="CreateBootstrapPopulation"/> for that case instead.
     /// </summary>
     public static Genome CreateBootstrap(IRandom rng, InnovationTracker tracker)
+    {
+        var g = BuildTemplate(rng, tracker);
+        PerturbBootstrapScalars(g, rng);
+        return g;
+    }
+
+    /// <summary>
+    /// A whole bootstrap population sharing one founding topology's gene ids and link
+    /// innovations (reserved once), each individual then independently re-randomized (color,
+    /// link weights, §4.1 scalar perturbation). This is what makes §7 GenomeDistance recognize
+    /// the founding population as near-identical (as intended — "tune δ so the bootstrap
+    /// population forms 1-3 species") instead of each individual looking like an unrelated
+    /// lineage.
+    /// </summary>
+    public static List<Genome> CreateBootstrapPopulation(IRandom rng, InnovationTracker tracker, int count)
+    {
+        var template = BuildTemplate(rng, tracker);
+        var result = new List<Genome>(count);
+        for (int i = 0; i < count; i++)
+        {
+            var g = template.Clone();
+            g.Body.ColorR = rng.NextFloat(0f, 1f);
+            g.Body.ColorG = rng.NextFloat(0f, 1f);
+            g.Body.ColorB = rng.NextFloat(0f, 1f);
+            foreach (var link in g.Brain.Links) link.Weight = rng.NextGaussian(0f, 0.5f);
+            PerturbBootstrapScalars(g, rng);
+            result.Add(g);
+        }
+        return result;
+    }
+
+    /// <summary>Canonical bootstrap topology (sensors/actuators/nodes/links) with unperturbed default scalars — gene ids/link innovations reserved from tracker exactly once per call.</summary>
+    private static Genome BuildTemplate(IRandom rng, InnovationTracker tracker)
     {
         var g = new Genome();
 
@@ -83,8 +119,6 @@ public static class GenomeFactory
                 g.Brain.Links.Add(new BrainLink { Innovation = innovation, From = from.Id, To = to.Id, Weight = weight, Enabled = true });
             }
         }
-
-        PerturbBootstrapScalars(g, rng);
 
         return g;
     }

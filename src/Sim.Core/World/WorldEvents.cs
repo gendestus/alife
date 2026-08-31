@@ -48,3 +48,11 @@ public struct BiteInfo
     public float Damage;
     public long Tick;
 }
+
+public struct SpeciesCreatedInfo
+{
+    public int SpeciesId;
+    public long FoundedTick;
+    public long FounderGenomeId;
+    public int? ParentSpeciesId;
+}

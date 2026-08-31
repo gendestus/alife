@@ -1,14 +1,15 @@
 using System;
+using System.Threading.Tasks;
 
 namespace Sim.Cli;
 
 internal static class Program
 {
-    private static int Main(string[] args)
+    private static async Task<int> Main(string[] args)
     {
         if (args.Length == 0)
         {
-            Console.Error.WriteLine("usage: sim <bench|run|resume> [options]");
+            Console.Error.WriteLine("usage: sim <bench|run|resume|migrate> [options]");
             return 1;
         }
 
@@ -20,8 +21,10 @@ internal static class Program
             return command switch
             {
                 "bench" => BenchCommand.Run(rest),
-                "run" => throw new NotImplementedException("`sim run` arrives with persistence in M4."),
-                "resume" => throw new NotImplementedException("`sim resume` arrives with checkpointing in M4."),
+                "migrate" => await MigrateCommand.RunAsync(rest),
+                "query" => await QueryCommand.RunAsync(rest),
+                "run" => await RunCommand.RunAsync(rest),
+                "resume" => await ResumeCommand.RunAsync(rest),
                 _ => Unknown(command),
             };
         }
@@ -34,7 +37,7 @@ internal static class Program
 
     private static int Unknown(string command)
     {
-        Console.Error.WriteLine($"unknown command '{command}'. usage: sim <bench|run|resume> [options]");
+        Console.Error.WriteLine($"unknown command '{command}'. usage: sim <bench|run|resume|migrate> [options]");
         return 1;
     }
 }

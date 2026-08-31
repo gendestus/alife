@@ -30,6 +30,12 @@ public sealed partial class World
     public List<Creature> Creatures { get; } = new();
     public List<Egg> Eggs { get; } = new();
 
+    // §7 speciation bookkeeping. _speciesById is permanent (species rows are never deleted);
+    // _activeSpecies is the current pass's matching candidate list, rebuilt each pass.
+    private readonly Dictionary<int, SpeciesRecord> _speciesById = new();
+    private readonly List<SpeciesRecord> _activeSpecies = new();
+    private int _nextSpeciesId;
+
     public long CurrentTick { get; private set; }
     public ulong NextCreatureId { get; private set; }
     public ulong NextEggId { get; private set; }
@@ -54,6 +60,7 @@ public sealed partial class World
     public event Action<EggEatenInfo>? EggEaten;
     public event Action<BiteInfo>? Bitten;
     public event Action<int>? Reseeded;
+    public event Action<SpeciesCreatedInfo>? SpeciesCreated;
 
     public long DeathsStarvation { get; private set; }
     public long DeathsPredation { get; private set; }
@@ -62,6 +69,7 @@ public sealed partial class World
     public long EggsHatched { get; private set; }
     public long EggsEaten { get; private set; }
     public long CapHits { get; private set; }
+    public long Bites { get; private set; }
 
     public float LastTickPlantRegrowth { get; private set; }
     public float LastTickCosts => (float)_lastTickCostsAccum;
@@ -191,13 +199,18 @@ public sealed partial class World
         return c;
     }
 
-    /// <summary>M2+: a bootstrap population of real genome-driven creatures (§4.5).</summary>
+    /// <summary>
+    /// M2+: a bootstrap population of real genome-driven creatures (§4.5). Individuals share one
+    /// founding topology's gene ids/link innovations (see CreateBootstrapPopulation) so §7
+    /// GenomeDistance recognizes them as the same founding lineage rather than as unrelated,
+    /// maximally-novel genomes.
+    /// </summary>
     public void BootstrapSpawnFromGenome(int count)
     {
         float w = _cfg.World.Width;
-        for (int i = 0; i < count; i++)
+        var genomes = GenomeFactory.CreateBootstrapPopulation(_rng, Innovations, count);
+        foreach (var genome in genomes)
         {
-            var genome = GenomeFactory.CreateBootstrap(_rng, Innovations);
             float x = _rng.NextFloat(0f, w);
             float y = _rng.NextFloat(0f, w);
             float heading = _rng.NextFloat(0f, MathF.PI * 2f);
@@ -269,12 +282,32 @@ public sealed partial class World
                 w.Write(c.Energy); w.Write(c.Health);
                 w.Write(c.Age);
                 w.Write(c.GenomeId);
+                w.Write(c.SpeciesId);
             }
 
             w.Write(Eggs.Count); // append-only order
             foreach (var e in Eggs)
             {
                 w.Write(e.Id); w.Write(e.X); w.Write(e.Y); w.Write(e.Energy); w.Write(e.HatchTick);
+            }
+
+            // §7 speciation state: representative reselection consumes RNG draws whose sequence
+            // depends on this bookkeeping, so it must be hashed (and checkpointed — see
+            // World.Checkpoint.cs) for test 1/2 to catch any divergence.
+            w.Write(_nextSpeciesId);
+            var speciesIdsSorted = new List<int>(_speciesById.Keys);
+            speciesIdsSorted.Sort();
+            w.Write(speciesIdsSorted.Count);
+            foreach (var id in speciesIdsSorted)
+            {
+                var s = _speciesById[id];
+                w.Write(s.Id);
+                w.Write(s.FoundedTick);
+                w.Write(s.ParentSpeciesId.HasValue);
+                if (s.ParentSpeciesId.HasValue) w.Write(s.ParentSpeciesId.Value);
+                w.Write(s.FounderGenomeId);
+                w.Write(s.LastSeenTick);
+                w.Write(s.Representative.Hash());
             }
         }
         stream.Position = 0;
@@ -307,6 +340,9 @@ public sealed partial class World
 
         // Step 5: hatch eggs whose incubation is done, in egg-id order (§2).
         HatchEggs();
+
+        // Step 6: speciation pass (§7), independent cadence from stats/checkpoint logging.
+        if (_cfg.Species.SpeciateEvery > 0 && CurrentTick % _cfg.Species.SpeciateEvery == 0) RunSpeciationPass();
 
         CheckExtinction();
 

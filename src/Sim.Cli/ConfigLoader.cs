@@ -17,9 +17,17 @@ internal static class ConfigLoader
     public static SimConfig Load(string path)
     {
         string json = File.ReadAllText(path);
-        var config = JsonSerializer.Deserialize<SimConfig>(json, JsonOptions);
-        return config ?? throw new InvalidOperationException($"Failed to parse config at '{path}'.");
+        return LoadFromJson(json);
     }
+
+    public static SimConfig LoadFromJson(string json)
+    {
+        var config = JsonSerializer.Deserialize<SimConfig>(json, JsonOptions);
+        return config ?? throw new InvalidOperationException("Failed to parse config JSON.");
+    }
+
+    /// <summary>The fully-resolved config (defaults + --set overrides), for run.config and checkpoints.</summary>
+    public static string ToJson(SimConfig config) => JsonSerializer.Serialize(config);
 
     /// <summary>Applies "section.property=value" overrides (e.g. "logging.positionsEvery=25") via reflection.</summary>
     public static void ApplyOverride(SimConfig config, string keyValue)

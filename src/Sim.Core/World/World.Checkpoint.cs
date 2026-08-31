@@ -56,10 +56,28 @@ public sealed partial class World
             w.Write(from); w.Write(to); w.Write(innovation);
         }
 
+        // §7 speciation registry — must round-trip exactly: representative reselection during
+        // RunSpeciationPass consumes RNG draws whose sequence depends on this state.
+        w.Write(_nextSpeciesId);
+        var speciesIdsSorted = new List<int>(_speciesById.Keys);
+        speciesIdsSorted.Sort();
+        w.Write(speciesIdsSorted.Count);
+        foreach (var id in speciesIdsSorted)
+        {
+            var s = _speciesById[id];
+            w.Write(s.Id);
+            w.Write(s.FoundedTick);
+            w.Write(s.ParentSpeciesId.HasValue);
+            if (s.ParentSpeciesId.HasValue) w.Write(s.ParentSpeciesId.Value);
+            w.Write(s.FounderGenomeId);
+            w.Write(s.LastSeenTick);
+            GenomeBinary.Write(w, s.Representative);
+        }
+
         // Reporting counters only — nothing in Sim.Core reads these to decide behavior, but a
         // resumed run's totals should still make sense as a continuation of the original.
         w.Write(DeathsStarvation); w.Write(DeathsPredation); w.Write(DeathsOldAge);
-        w.Write(EggsLaid); w.Write(EggsHatched); w.Write(EggsEaten); w.Write(CapHits);
+        w.Write(EggsLaid); w.Write(EggsHatched); w.Write(EggsEaten); w.Write(CapHits); w.Write(Bites);
 
         w.Write(Plants.P);
         foreach (var b in Plants.Biomass) w.Write(b);
@@ -172,8 +190,31 @@ public sealed partial class World
         inno.LinkInnovations = linkInnovations;
         Innovations.SetState(inno);
 
+        _nextSpeciesId = r.ReadInt32();
+        int speciesRecordCount = r.ReadInt32();
+        _speciesById.Clear();
+        for (int i = 0; i < speciesRecordCount; i++)
+        {
+            int id = r.ReadInt32();
+            long foundedTick = r.ReadInt64();
+            bool hasParent = r.ReadBoolean();
+            int? parentSpeciesId = hasParent ? r.ReadInt32() : null;
+            long founderGenomeId = r.ReadInt64();
+            long lastSeenTick = r.ReadInt64();
+            var representative = GenomeBinary.Read(r);
+            _speciesById[id] = new SpeciesRecord
+            {
+                Id = id,
+                FoundedTick = foundedTick,
+                ParentSpeciesId = parentSpeciesId,
+                FounderGenomeId = founderGenomeId,
+                LastSeenTick = lastSeenTick,
+                Representative = representative,
+            };
+        }
+
         DeathsStarvation = r.ReadInt64(); DeathsPredation = r.ReadInt64(); DeathsOldAge = r.ReadInt64();
-        EggsLaid = r.ReadInt64(); EggsHatched = r.ReadInt64(); EggsEaten = r.ReadInt64(); CapHits = r.ReadInt64();
+        EggsLaid = r.ReadInt64(); EggsHatched = r.ReadInt64(); EggsEaten = r.ReadInt64(); CapHits = r.ReadInt64(); Bites = r.ReadInt64();
 
         int plantP = r.ReadInt32();
         if (plantP != Plants.P) throw new InvalidDataException($"checkpoint plant grid is {plantP}x{plantP}, world is {Plants.P}x{Plants.P} — config mismatch?");
